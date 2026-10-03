@@ -38,7 +38,7 @@ with:
 ```
 
 Open the bar widget to search OCR text or browse captured days on the
-**Timeline** tab. Select a capture to preview it at a larger size, copy its
+**Timeline** tab, which opens to the latest day with captures. Select a capture to preview it at a larger size, copy its
 recognized text, or forget that frame. Storage controls also let you choose an
 automatic age limit and explicitly forget a day or the entire archive;
 destructive actions require confirmation.

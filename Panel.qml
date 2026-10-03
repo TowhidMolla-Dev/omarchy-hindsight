@@ -13,7 +13,7 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property int cursor: 0
-  property string mode: "search"
+  property string mode: "timeline"
   property var selectedFrame: null
   property string confirmForget: ""
 
@@ -240,7 +240,7 @@ Panel {
           wrapMode: Text.WordWrap
           text: root.frames === 0
                 ? "Nothing captured yet."
-                : "Search remembered screens, or switch to Timeline to browse by day."
+                : "Search remembered screens, or browse captures by day in Timeline."
         }
 
         Row {
