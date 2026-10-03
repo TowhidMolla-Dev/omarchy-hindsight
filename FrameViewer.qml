@@ -7,8 +7,8 @@ FloatingWindow {
   property var frame: null
 
   title: frame
-    ? "Hindsight · " + frame.day + " " + frame.time + " · " + (frame.app || "unknown")
-    : "Hindsight"
+    ? "Hindsight image viewer · " + frame.day + " " + frame.time + " · " + (frame.app || "unknown")
+    : "Hindsight image viewer"
   visible: false
   implicitWidth: 1440
   implicitHeight: 900

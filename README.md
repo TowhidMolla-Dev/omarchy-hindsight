@@ -47,6 +47,16 @@ available in the capture details. Storage controls also let you choose
 an automatic age limit and explicitly forget a day or the entire archive;
 destructive actions require confirmation.
 
+On Omarchy, the image viewer is configured to open as a centered floating
+window with this rule in `~/.config/hypr/hyprland.lua`:
+
+```lua
+o.window(
+  { class = "^org.quickshell$", title = "^Hindsight image viewer" },
+  { float = true, center = true }
+)
+```
+
 ## Remove
 
 ```bash
