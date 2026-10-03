@@ -85,13 +85,11 @@ Panel {
     copier.running = true
   }
 
-  function copyCurrent() {
-    if (root.selectedFrame) {
-      root.copyFrame(root.selectedFrame.id)
-      return
-    }
+  function openCurrent() {
+    if (root.selectedFrame) return
     var items = root.mode === "timeline" ? root.timelineFrames : root.results
-    if (items && root.cursor < items.length) root.copyFrame(items[root.cursor].id)
+    if (items && root.cursor >= 0 && root.cursor < items.length)
+      root.selectFrame(items[root.cursor])
   }
 
   Process { id: copier; running: false }
@@ -114,13 +112,34 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: root.mode === "search" ? searchBox : keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(420))
+    contentWidth: panel.fittedContentWidth(Style.space(560))
     contentHeight: panel.fittedContentHeight(Math.min(Style.space(680), column.implicitHeight))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: root.close()
+      Keys.onPressed: function(event) {
+        if (root.mode === "search" && searchBox.activeFocus) return
+        if (event.key === Qt.Key_Down) {
+          root.moveCursor(1)
+          event.accepted = true
+        } else if (event.key === Qt.Key_Up) {
+          root.moveCursor(-1)
+          event.accepted = true
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+          root.openCurrent()
+          event.accepted = true
+        } else if (event.key === Qt.Key_Escape) {
+          if (root.selectedFrame) {
+            root.selectedFrame = null
+            root.confirmForget = ""
+          } else {
+            root.close()
+          }
+          event.accepted = true
+        }
+      }
 
       Column {
         id: column
@@ -197,7 +216,7 @@ Panel {
             root.selectedFrame = null
             debounce.restart()
           }
-          onAccepted: root.copyCurrent()
+          onAccepted: root.openCurrent()
           Keys.onPressed: function (event) {
             if (event.key === Qt.Key_Down) { root.moveCursor(1); event.accepted = true }
             else if (event.key === Qt.Key_Up) { root.moveCursor(-1); event.accepted = true }
@@ -301,7 +320,7 @@ Panel {
         ListView {
           id: list
           width: parent.width
-          height: Math.min(Style.space(220), contentHeight)
+          height: Math.min(Style.space(320), contentHeight)
           visible: !root.selectedFrame
             && (root.mode === "timeline" ? root.timelineFrames.length > 0 : root.results.length > 0)
           clip: true
@@ -333,9 +352,9 @@ Panel {
 
               Image {
                 id: thumb
-                width: Style.space(64)
-                height: Style.space(40)
-                fillMode: Image.PreserveAspectCrop
+                width: Style.space(112)
+                height: Style.space(72)
+                fillMode: Image.PreserveAspectFit
                 asynchronous: true
                 cache: false
                 source: root.frameSource(modelData.path)
@@ -400,6 +419,18 @@ Panel {
             : "No captures on " + root.timelineDay + "."
         }
 
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.mode === "timeline" && !root.selectedFrame
+            && root.timelineFrames.length > 0
+          color: Color.foreground
+          opacity: 0.6
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: root.timelineFrames.length + " captures on this day · use arrows and Enter, or click a thumbnail"
+        }
+
         Column {
           width: parent.width
           spacing: Style.space(6)
@@ -433,7 +464,7 @@ Panel {
 
           Image {
             width: parent.width
-            height: Style.space(210)
+            height: Style.space(420)
             fillMode: Image.PreserveAspectFit
             asynchronous: true
             cache: false
