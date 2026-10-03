@@ -77,6 +77,11 @@ Panel {
     root.confirmForget = ""
   }
 
+  FrameViewer {
+    id: frameViewer
+    frame: root.selectedFrame
+  }
+
   function copyFrame(id) {
     if (!root.service) return
     var frameId = Number(id)
@@ -453,6 +458,12 @@ Panel {
               text: "Copy text"
               foreground: Color.foreground
               onClicked: root.copyFrame(root.selectedFrame.id)
+            }
+
+            Button {
+              text: "Open large"
+              foreground: Color.foreground
+              onClicked: frameViewer.visible = true
             }
 
             Button {
