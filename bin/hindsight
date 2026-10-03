@@ -189,6 +189,7 @@ def load_config():
     for key, floor, cast in (("interval", 1.0, float),
                              ("changeBits", 0, int),
                              ("budgetMB", 64, int),
+                             ("retentionDays", 0, int),
                              ("quality", 1, int),
                              ("ocrTimeout", 1, int)):
         try:
@@ -204,6 +205,7 @@ def load_config():
                 % (key, cfg[key], DEFAULTS[key]))
             cfg[key] = DEFAULTS[key]
     cfg["quality"] = min(100, cfg["quality"])
+    cfg["retentionDays"] = min(36500, cfg["retentionDays"])
     return cfg
 
 
@@ -1603,12 +1605,17 @@ def note_ocr_failure(conn, frame_id):
 
 
 def attach_text(conn, frame_id, text, app, title):
+    conn.execute("BEGIN IMMEDIATE")
+    if not conn.execute("SELECT 1 FROM frames WHERE id=?", (frame_id,)).fetchone():
+        conn.commit()
+        return False
     conn.execute("DELETE FROM frames_fts WHERE rowid=?", (frame_id,))
     conn.execute(
         "INSERT INTO frames_fts(rowid,text,app,title) VALUES(?,?,?,?)",
         (frame_id, text, app or "", title or ""))
     conn.execute("UPDATE frames SET ocr=1 WHERE id=?", (frame_id,))
     conn.commit()
+    return True
 
 
 def unlink_frame(path):
@@ -2511,6 +2518,17 @@ def cmd_timeline(args):
     return 0
 
 
+def cmd_days(_args):
+    conn = connect()
+    rows = conn.execute(
+        "SELECT day, COUNT(*) FROM frames GROUP BY day ORDER BY day DESC"
+    ).fetchall()
+    print(json.dumps({"days": [
+        {"day": day, "frames": int(count)} for day, count in rows
+    ]}))
+    return 0
+
+
 def cmd_text(args):
     if not args:
         log("usage: hindsight text <frame-id>")
@@ -2620,21 +2638,63 @@ def cmd_prune(_args):
 
 
 def cmd_forget(args):
-    """Delete history. 'today', a YYYY-MM-DD day, or 'all'."""
+    """Delete history, one frame, a day, today, or everything."""
     if not args:
-        log("usage: hindsight forget <all|today|YYYY-MM-DD>")
+        log("usage: hindsight forget <all|today|YYYY-MM-DD|frame ID>")
         return 2
     target = args[0]
     conn = connect()
-    if target == "all":
+    if target == "frame":
+        if len(args) != 2 or not args[1].isdigit() or int(args[1]) <= 0:
+            log("usage: hindsight forget frame <positive frame ID>")
+            return 2
+        rows = conn.execute(
+            "SELECT id,path FROM frames WHERE id=?", (int(args[1]),)
+        ).fetchall()
+    elif target == "all":
         rows = conn.execute("SELECT id,path FROM frames").fetchall()
     else:
         day = time.strftime("%Y-%m-%d") if target == "today" else target
+        try:
+            if time.strftime("%Y-%m-%d", time.strptime(day, "%Y-%m-%d")) != day:
+                raise ValueError("invalid date")
+        except ValueError:
+            log("usage: hindsight forget <all|today|YYYY-MM-DD|frame ID>")
+            return 2
         rows = conn.execute(
             "SELECT id,path FROM frames WHERE day=?", (day,)).fetchall()
     removed = drop_frames(conn, rows)
     empty_dirs()
     print(json.dumps({"forgot": removed, "target": target}))
+    return 0
+
+
+def cmd_retention(args):
+    """Show or set the maximum age of stored frames; zero disables the limit."""
+    if len(args) > 1 or (args and not args[0].isdigit()):
+        log("usage: hindsight retention [days (0 disables age limit)]")
+        return 2
+    cfg = load_config()
+    if args:
+        days = int(args[0])
+        if days > 36500:
+            log("retention limit must be between 0 and 36500 days")
+            return 2
+        if save_config({"retentionDays": days}) is None:
+            return 1
+        cfg = load_config()
+        conn = connect()
+        removed = prune(conn, cfg)
+    else:
+        conn = connect()
+        removed = 0
+    frames, total = disk_usage(conn)
+    print(json.dumps({
+        "retentionDays": int(cfg.get("retentionDays") or 0),
+        "removed": removed,
+        "frames": frames,
+        "bytes": total,
+    }, sort_keys=True))
     return 0
 
 
@@ -2834,6 +2894,7 @@ COMMANDS = {
     "watch": cmd_watch,
     "search": cmd_search,
     "timeline": cmd_timeline,
+    "days": cmd_days,
     "text": cmd_text,
     "copy": cmd_copy,
     "status": cmd_status,
@@ -2842,6 +2903,7 @@ COMMANDS = {
     "toggle": cmd_toggle,
     "prune": cmd_prune,
     "forget": cmd_forget,
+    "retention": cmd_retention,
     "doctor": cmd_doctor,
     "budget": cmd_budget,
     "config": cmd_config,
@@ -2859,6 +2921,7 @@ def main(argv):
             "  watch                 run the recorder (used by the bar)\n"
             "  search <words>        full-text search across captured screens\n"
             "  timeline [day]        frames for a day, oldest first\n"
+            "  days                  days with captured frames\n"
             "  text <id>             the recognised text of one frame\n"
             "  copy <id>             put that text on the clipboard\n"
             "  status                current recorder state\n"
@@ -2866,6 +2929,8 @@ def main(argv):
             "  prune                 enforce the size and age budget now\n"
             "  budget [size]         show, or set, disk budget as days of history\n"
             "  forget <all|today|YYYY-MM-DD>\n"
+            "  forget frame <id>     delete one frame\n"
+            "  retention [days]      show or set the age limit (0 disables it)\n"
             "  doctor                check dependencies and capture\n"
             "  config                print (creating if needed) the config path\n")
         return 0

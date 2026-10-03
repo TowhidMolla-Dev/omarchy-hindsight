@@ -27,6 +27,7 @@ Item {
   property int coverageDays: 0
   property string coverageBasis: ""
   property var budgetOptions: []
+  property int retentionDays: 0
 
   // Search results are pulled on demand rather than streamed: the recorder
   // never puts screen text on the state channel, so nothing readable sits in
@@ -34,6 +35,11 @@ Item {
   property var results: []
   property string query: ""
   property bool searching: false
+  property var timelineDays: []
+  property var timelineFrames: []
+  property string timelineDay: ""
+  property bool timelineLoading: false
+  property string controlError: ""
 
   readonly property string helperPath: {
     var url = Qt.resolvedUrl("bin/hindsight").toString()
@@ -63,6 +69,23 @@ Item {
     searcher.running = true
   }
 
+  function refreshTimeline() {
+    root.controlError = ""
+    dayLister.running = false
+    dayLister.command = [root.helperPath, "days"]
+    dayLister.running = true
+  }
+
+  function loadTimeline(day) {
+    root.timelineDay = day
+    root.timelineFrames = []
+    root.timelineLoading = true
+    root.controlError = ""
+    timelineReader.running = false
+    timelineReader.command = [root.helperPath, "timeline", day]
+    timelineReader.running = true
+  }
+
   // Pause gets its own Process. It used to share one with forget(), and a
   // command assigned to a Process that is already running is ignored - so a
   // pause pressed during a "forget everything" never ran, while the bar had
@@ -89,12 +112,21 @@ Item {
     budgeter.running = true
   }
 
-  function forget(target) {
+  function setRetention(days) {
+    retentioner.running = false
+    retentioner.command = [root.helperPath, "retention", String(days)]
+    retentioner.running = true
+    root.controlError = ""
+  }
+
+  function forget(target, value) {
     control.running = false
     control.command = [root.helperPath, "forget", target]
+    if (value !== undefined) control.command.push(String(value))
     control.running = true
     root.results = []
     root.query = ""
+    root.controlError = ""
   }
 
   Process {
@@ -156,10 +188,68 @@ Item {
         root.searching = false
         try {
           var data = JSON.parse(String(this.text))
-          if (data.query === root.query || !root.query) root.results = data.results || []
+          if (data.query === root.query) root.results = data.results || []
         } catch (e) {
           root.results = []
         }
+      }
+    }
+  }
+
+  Process {
+    id: dayLister
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(this.text))
+          root.timelineDays = data.days || []
+          if (root.timelineDays.length === 0) {
+            root.timelineDay = ""
+            root.timelineFrames = []
+            root.timelineLoading = false
+          } else if (root.timelineDays.some(function (entry) {
+                       return entry.day === root.timelineDay
+                     })) {
+            root.loadTimeline(root.timelineDay)
+          } else {
+            root.loadTimeline(root.timelineDays[0].day)
+          }
+        } catch (e) {
+          root.timelineLoading = false
+          root.controlError = "Could not read the timeline."
+        }
+      }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) {
+        root.timelineLoading = false
+        root.controlError = "Could not load captured days."
+      }
+    }
+  }
+
+  Process {
+    id: timelineReader
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(this.text))
+          if (data.day === root.timelineDay) {
+            root.timelineFrames = data.frames || []
+            root.timelineLoading = false
+          }
+        } catch (e) {
+          root.timelineLoading = false
+          root.controlError = "Could not read captures for this day."
+        }
+      }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) {
+        root.timelineLoading = false
+        root.controlError = "Could not load captures for this day."
       }
     }
   }
@@ -178,6 +268,7 @@ Item {
           root.coverageBasis = data.basis || root.coverageBasis
           root.bytes = data.usedBytes !== undefined ? data.usedBytes : root.bytes
           root.frames = data.frames !== undefined ? data.frames : root.frames
+          root.retentionDays = data.retentionDays || 0
         } catch (e) {
           // Leave the last good numbers on screen rather than blanking them.
         }
@@ -188,6 +279,55 @@ Item {
   Process {
     id: control
     running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(this.text))
+          if (data.forgot !== undefined) {
+            root.controlError = ""
+            root.refreshBudget()
+            root.refreshTimeline()
+          }
+        } catch (e) {
+          root.controlError = "Could not confirm the deletion."
+        }
+      }
+    }
+    stderr: SplitParser {
+      onRead: function (line) {
+        var text = String(line).trim()
+        if (text !== "") console.warn("hindsight: " + text)
+      }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) root.controlError = "Could not delete the selected history."
+    }
+  }
+
+  Process {
+    id: retentioner
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var data = JSON.parse(String(this.text))
+          root.retentionDays = data.retentionDays || 0
+          root.controlError = ""
+          root.refreshBudget()
+        } catch (e) {
+          root.controlError = "Could not update the age limit."
+        }
+      }
+    }
+    stderr: SplitParser {
+      onRead: function (line) {
+        var text = String(line).trim()
+        if (text !== "") console.warn("hindsight: " + text)
+      }
+    }
+    onExited: function (exitCode) {
+      if (exitCode !== 0) root.controlError = "Could not update the age limit."
+    }
   }
 
   // The recorder is the authority on whether it is paused: reporting it

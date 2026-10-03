@@ -37,6 +37,12 @@ with:
 ~/.config/omarchy/plugins/dhirajkhanna.hindsight/bin/hindsight doctor
 ```
 
+Open the bar widget to search OCR text or browse captured days on the
+**Timeline** tab. Select a capture to preview it at a larger size, copy its
+recognized text, or forget that frame. Storage controls also let you choose an
+automatic age limit and explicitly forget a day or the entire archive;
+destructive actions require confirmation.
+
 ## Remove
 
 ```bash
@@ -127,6 +133,16 @@ Lowering the budget prunes immediately; it does not wait for the disk to fill.
 `retentionDays` is off by default so that disk stays the single limit — set it
 if you want a hard age ceiling regardless of space.
 
+The bar's storage controls offer age limits of 7, 30, or 90 days, plus
+**Never**. Applying a limit immediately prunes older frames. The CLI can set
+any whole-number limit from 0 to 36500 days; zero disables age-based pruning:
+
+```bash
+hindsight retention          # show the current limit
+hindsight retention 30       # keep at most 30 days
+hindsight retention 0        # use the disk budget only
+```
+
 ## Dependencies
 
 Every dependency ships in Omarchy's base install: `grim`, `tesseract`,
@@ -194,7 +210,8 @@ This plugin exists to remember your screen, so it is built to be told no.
   not match before anything stores, reads or searches it.
 - **Forget.** `bin/hindsight forget today`, a specific day, or `all`. The
   archive is swept for frames the index does not know about, so a frame whose
-  row never landed cannot outlive a `forget all` by hiding from it.
+  row never landed cannot outlive a `forget all` by hiding from it. A single
+  frame can also be removed with `bin/hindsight forget frame <id>`.
 - **No other user can read it.** Every directory is `0700` and every file
   `0600` - frames, the index and its WAL, config, state. The recorder also
   repairs anything an earlier version left loose when it starts, and
@@ -207,13 +224,16 @@ This plugin exists to remember your screen, so it is built to be told no.
 hindsight watch                 run the recorder (the bar does this for you)
 hindsight search <words>        full-text search across captured screens
 hindsight timeline [day]        frames for a day, oldest first
+hindsight days                  days that have captured frames
 hindsight text <id>             the recognised text of one frame
 hindsight copy <id>             put that text on the clipboard
 hindsight status                what the recorder is doing
 hindsight pause | resume | toggle
 hindsight prune                 enforce the size and age budget now
 hindsight budget [size]         show, or set, disk budget as days of history
+hindsight retention [days]      show or set the age limit (0 disables it)
 hindsight forget <all|today|YYYY-MM-DD>
+hindsight forget frame <id>     delete one frame and its indexed text
 hindsight doctor                check dependencies and capture
 hindsight config                print (creating if needed) the config path
 ```
@@ -271,8 +291,9 @@ Frames and the index live in `~/.local/share/omarchy-hindsight/`.
 python3 tests/test-index.py
 ```
 
-302 offline checks covering the hashing, the blocklist, query sanitising, the
-search round trip, ring-buffer pruning, age retention, index migration, the
+308 offline checks covering the hashing, the blocklist, query sanitising, the
+search round trip, ring-buffer pruning, age retention, timeline dates,
+deletion commands, OCR/delete races, index migration, the
 frame-vanished-under-the-backfill case, the helper ceilings, and where a
 helper is allowed to come from — none of which
 need a screen. The ceiling checks run real processes, because a stubbed

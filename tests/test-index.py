@@ -174,6 +174,81 @@ check("retention deletes frames past the horizon",
                    (old_path,)).fetchone()[0] == 0)
 check("retention removed the file", not os.path.exists(old_path))
 
+print("\n-- timeline and explicit deletion commands --")
+import contextlib as _contextlib
+import io as _io
+import json as _json
+
+days_output = _io.StringIO()
+with _contextlib.redirect_stdout(days_output):
+    hs.cmd_days([])
+available_days = _json.loads(days_output.getvalue())["days"]
+check("the day index lists days with captures",
+      any(entry["day"] == time.strftime("%Y-%m-%d", time.localtime(now))
+          for entry in available_days), available_days[:3])
+
+delete_day = time.strftime("%Y-%m-%d", time.localtime(now))
+delete_path = os.path.join(hs.FRAMES, delete_day, "delete-frame.webp")
+os.makedirs(os.path.dirname(delete_path), exist_ok=True)
+with open(delete_path, "wb") as frame:
+    frame.write(b"delete me")
+delete_id = hs.store(aged, now, delete_path, "app", "title", "DP-1", 3, 9)
+hs.attach_text(aged, delete_id, "text to delete", "app", "title")
+deleted_output = _io.StringIO()
+with _contextlib.redirect_stdout(deleted_output):
+    delete_rc = hs.cmd_forget(["frame", str(delete_id)])
+check("forget frame removes its image, row and OCR text",
+      delete_rc == 0
+      and _json.loads(deleted_output.getvalue())["forgot"] == 1
+      and not os.path.exists(delete_path)
+      and aged.execute("SELECT 1 FROM frames WHERE id=?", (delete_id,)).fetchone() is None
+      and aged.execute("SELECT 1 FROM frames_fts WHERE rowid=?", (delete_id,)).fetchone() is None)
+check("forget rejects malformed frame identifiers",
+      hs.cmd_forget(["frame", "0"]) == 2)
+
+stale_id = hs.store(aged, now, delete_path, "app", "title", "DP-1", 4, 9)
+hs.drop_frames(aged, [(stale_id, delete_path)])
+check("OCR finishing after deletion cannot recreate an orphan index row",
+      not hs.attach_text(aged, stale_id, "late OCR", "app", "title")
+      and aged.execute("SELECT 1 FROM frames_fts WHERE rowid=?",
+                       (stale_id,)).fetchone() is None)
+
+_old_db_path = hs.DB_PATH
+_old_config = open(hs.CONFIG, "rb").read() if os.path.exists(hs.CONFIG) else None
+_retention_db = os.path.join(TMP, "retention-command.db")
+hs.DB_PATH = _retention_db
+hs.save_config({"budgetMB": 100000, "retentionDays": 0})
+old_cli_path = os.path.join(hs.FRAMES, "2020-01-01", "retention-cli.webp")
+os.makedirs(os.path.dirname(old_cli_path), exist_ok=True)
+with open(old_cli_path, "wb") as frame:
+    frame.write(b"old")
+retention_conn = hs.connect()
+old_cli_id = hs.store(retention_conn, now - 90 * 86400, old_cli_path,
+                      "app", "old", "DP-1", 5, 3)
+retention_output = _io.StringIO()
+with _contextlib.redirect_stdout(retention_output):
+    retention_rc = hs.cmd_retention(["30"])
+retention_data = _json.loads(retention_output.getvalue())
+check("setting retention immediately prunes and reports the limit",
+      retention_rc == 0 and retention_data["retentionDays"] == 30
+      and retention_data["removed"] == 1
+      and hs.load_config()["retentionDays"] == 30
+      and retention_conn.execute("SELECT 1 FROM frames WHERE id=?",
+                                 (old_cli_id,)).fetchone() is None)
+disable_output = _io.StringIO()
+with _contextlib.redirect_stdout(disable_output):
+    disable_rc = hs.cmd_retention(["0"])
+check("retention can be disabled without losing other config",
+      disable_rc == 0
+      and _json.loads(disable_output.getvalue())["retentionDays"] == 0
+      and hs.load_config()["budgetMB"] == 100000)
+hs.DB_PATH = _old_db_path
+if _old_config is None:
+    os.remove(hs.CONFIG)
+else:
+    with open(hs.CONFIG, "wb") as config_file:
+        config_file.write(_old_config)
+
 print("\n-- contentless index migration --")
 legacy_dir = os.path.join(TMP, "legacy")
 os.makedirs(legacy_dir, exist_ok=True)

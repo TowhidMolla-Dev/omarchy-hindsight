@@ -13,12 +13,17 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property int cursor: 0
+  property string mode: "search"
+  property var selectedFrame: null
+  property string confirmForget: ""
 
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor("dhirajkhanna.hindsight") : null
   readonly property bool paused: service ? service.paused === true : false
+  readonly property bool capturing: service ? service.capturing === true : false
   readonly property int frames: service ? service.frames : 0
   readonly property int today: service ? service.today : 0
   readonly property int pendingOcr: service ? service.pendingOcr : 0
+  readonly property string reason: service ? service.reason : ""
   readonly property real bytes: service ? service.bytes : 0
   readonly property real budget: service ? service.budget : 0
   readonly property var results: service ? service.results : []
@@ -28,6 +33,12 @@ Panel {
   readonly property string coverageText: service ? service.coverageText : ""
   readonly property string coverageBasis: service ? service.coverageBasis : ""
   readonly property var budgetOptions: service ? service.budgetOptions : []
+  readonly property var timelineDays: service ? service.timelineDays : []
+  readonly property var timelineFrames: service ? service.timelineFrames : []
+  readonly property string timelineDay: service ? service.timelineDay : ""
+  readonly property bool timelineLoading: service ? service.timelineLoading : false
+  readonly property int retentionDays: service ? service.retentionDays : 0
+  readonly property string controlError: service ? service.controlError : ""
 
   property bool showStorage: false
 
@@ -45,24 +56,42 @@ Panel {
   }
 
   function moveCursor(delta) {
-    var count = root.results ? root.results.length : 0
+    var items = root.mode === "timeline" ? root.timelineFrames : root.results
+    var count = items ? items.length : 0
     if (count === 0) return
     root.cursor = Math.max(0, Math.min(count - 1, root.cursor + delta))
     list.positionViewAtIndex(root.cursor, ListView.Contain)
   }
 
-  // Selecting a result copies its text rather than trying to reopen the app:
-  // the words are what you came back for, and the picture is right there to
-  // confirm you found the right moment.
-  function copyCurrent() {
-    if (!root.results || root.cursor >= root.results.length) return
-    // No shell. The pipeline this replaced read $BASH_ENV before it ran a
-    // line of ours, and took python3 and wl-copy off the inherited PATH.
-    // The helper now holds the text and hands it to wl-copy itself.
-    var id = Number(root.results[root.cursor].id)
-    if (!isFinite(id) || id <= 0 || Math.floor(id) !== id) return
-    copier.command = [root.service.helperPath, "copy", String(id)]
+  function frameSource(path) {
+    if (!path) return ""
+    var parts = String(path).split("/")
+    var encoded = []
+    for (var i = 0; i < parts.length; i++)
+      encoded.push(encodeURIComponent(parts[i]))
+    return "file://" + encoded.join("/")
+  }
+
+  function selectFrame(frame) {
+    root.selectedFrame = frame
+    root.confirmForget = ""
+  }
+
+  function copyFrame(id) {
+    if (!root.service) return
+    var frameId = Number(id)
+    if (!isFinite(frameId) || frameId <= 0 || Math.floor(frameId) !== frameId) return
+    copier.command = [root.service.helperPath, "copy", String(frameId)]
     copier.running = true
+  }
+
+  function copyCurrent() {
+    if (root.selectedFrame) {
+      root.copyFrame(root.selectedFrame.id)
+      return
+    }
+    var items = root.mode === "timeline" ? root.timelineFrames : root.results
+    if (items && root.cursor < items.length) root.copyFrame(items[root.cursor].id)
   }
 
   Process { id: copier; running: false }
@@ -73,6 +102,7 @@ Panel {
       if (root.service) {
         root.service.search(searchBox.text)
         root.service.refreshBudget()
+        root.service.refreshTimeline()
       }
     }
   }
@@ -83,9 +113,9 @@ Panel {
     owner: root.hostWidget || root
     bar: root.bar
     open: root.opened
-    focusTarget: searchBox
+    focusTarget: root.mode === "search" ? searchBox : keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(420))
-    contentHeight: Math.min(Style.space(520), column.implicitHeight)
+    contentHeight: panel.fittedContentHeight(Math.min(Style.space(680), column.implicitHeight))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -112,6 +142,8 @@ Panel {
             text: {
               if (root.paused) return "Paused - nothing is being captured."
               if (root.blockedBy !== "") return "Holding off: this window matches \"" + root.blockedBy + "\"."
+              if (!root.capturing && root.reason !== "")
+                return "Holding off: " + root.reason + "."
               var parts = [root.today + " captured today", root.sizeText(root.bytes) + " of " + root.sizeText(root.budget)]
               if (root.pendingOcr > 0) parts.push(root.pendingOcr + " still being read")
               return parts.join("  ·  ")
@@ -128,14 +160,41 @@ Panel {
 
         PanelSeparator { width: parent.width }
 
-        // -- the search box -------------------------------------------------
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Button {
+            text: "Search"
+            foreground: Color.foreground
+            onClicked: {
+              root.mode = "search"
+              root.selectedFrame = null
+              root.cursor = 0
+            }
+          }
+
+          Button {
+            text: "Timeline"
+            foreground: Color.foreground
+            onClicked: {
+              root.mode = "timeline"
+              root.selectedFrame = null
+              root.cursor = 0
+              if (root.service) root.service.refreshTimeline()
+            }
+          }
+        }
+
         TextField {
           id: searchBox
           width: parent.width
+          visible: root.mode === "search"
           foreground: Color.foreground
           placeholderText: "Search what you have seen"
           onTextChanged: {
             root.cursor = 0
+            root.selectedFrame = null
             debounce.restart()
           }
           onAccepted: root.copyCurrent()
@@ -155,11 +214,11 @@ Panel {
           onTriggered: if (root.service) root.service.search(searchBox.text)
         }
 
-        // -- results --------------------------------------------------------
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          visible: searchBox.text.length > 0 && !root.searching && root.results.length === 0
+          visible: root.mode === "search"
+            && searchBox.text.length > 0 && !root.searching && root.results.length === 0
           color: Color.foreground
           opacity: 0.7
           font.family: Style.font.family
@@ -173,7 +232,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          visible: searchBox.text.length === 0
+          visible: root.mode === "search" && searchBox.text.length === 0
           color: Color.foreground
           opacity: 0.7
           font.family: Style.font.family
@@ -181,16 +240,72 @@ Panel {
           wrapMode: Text.WordWrap
           text: root.frames === 0
                 ? "Nothing captured yet."
-                : "Type to search across " + root.frames + " remembered screens. Enter copies the text, and everything stays on this machine."
+                : "Search remembered screens, or switch to Timeline to browse by day."
+        }
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: root.mode === "timeline" && !root.selectedFrame
+
+          Button {
+            id: earlierButton
+            text: "Earlier"
+            foreground: Color.foreground
+            enabled: root.service && root.timelineDays.length > 0
+              && root.timelineDays.findIndex(function(entry) {
+                   return entry.day === root.timelineDay
+                 }) < root.timelineDays.length - 1
+            onClicked: {
+              var index = root.timelineDays.findIndex(function(entry) {
+                return entry.day === root.timelineDay
+              })
+              if (index >= 0 && index + 1 < root.timelineDays.length) {
+                root.cursor = 0
+                root.service.loadTimeline(root.timelineDays[index + 1].day)
+              }
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width - earlierButton.width - laterButton.width - Style.space(12)
+            horizontalAlignment: Text.AlignHCenter
+            anchors.verticalCenter: parent.verticalCenter
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            text: root.timelineDay === "" ? "No captured days" : root.timelineDay
+          }
+
+          Button {
+            id: laterButton
+            text: "Later"
+            foreground: Color.foreground
+            enabled: root.service && root.timelineDays.length > 0
+              && root.timelineDays.findIndex(function(entry) {
+                   return entry.day === root.timelineDay
+                 }) > 0
+            onClicked: {
+              var index = root.timelineDays.findIndex(function(entry) {
+                return entry.day === root.timelineDay
+              })
+              if (index > 0) {
+                root.cursor = 0
+                root.service.loadTimeline(root.timelineDays[index - 1].day)
+              }
+            }
+          }
         }
 
         ListView {
           id: list
           width: parent.width
-          height: Math.min(Style.space(360), contentHeight)
-          visible: root.results.length > 0
+          height: Math.min(Style.space(220), contentHeight)
+          visible: !root.selectedFrame
+            && (root.mode === "timeline" ? root.timelineFrames.length > 0 : root.results.length > 0)
           clip: true
-          model: root.results
+          model: root.mode === "timeline" ? root.timelineFrames : root.results
           spacing: Style.space(4)
           currentIndex: root.cursor
 
@@ -204,7 +319,7 @@ Panel {
               anchors.fill: parent
               hoverEnabled: true
               onEntered: root.cursor = index
-              onClicked: { root.cursor = index; root.copyCurrent() }
+              onClicked: { root.cursor = index; root.selectFrame(modelData) }
             }
 
             Row {
@@ -223,18 +338,7 @@ Panel {
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
                 cache: false
-                // Built per path segment rather than concatenated: Qt
-                // percent-decodes a file URL, so a raw "%2e%2e" in a stored
-                // path would climb out of the archive, and an ordinary "#"
-                // in a home directory would break every thumbnail.
-                source: {
-                  if (!modelData.path) return ""
-                  var parts = String(modelData.path).split("/")
-                  var encoded = []
-                  for (var i = 0; i < parts.length; i++)
-                    encoded.push(encodeURIComponent(parts[i]))
-                  return "file://" + encoded.join("/")
-                }
+                source: root.frameSource(modelData.path)
                 sourceSize.width: Style.space(128)
               }
 
@@ -262,14 +366,169 @@ Panel {
                   wrapMode: Text.WordWrap
                   maximumLineCount: 2
                   elide: Text.ElideRight
-                  text: modelData.snippet
+                  text: root.mode === "search"
+                    ? modelData.snippet
+                    : (modelData.title || "Captured screen")
                 }
               }
             }
           }
         }
 
-        PanelSeparator { width: parent.width }
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.mode === "timeline" && !root.selectedFrame
+            && root.timelineLoading
+          color: Color.foreground
+          opacity: 0.7
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: "Loading captures…"
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.mode === "timeline" && !root.selectedFrame
+            && !root.timelineLoading && root.timelineFrames.length === 0
+          color: Color.foreground
+          opacity: 0.7
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: root.timelineDay === "" ? "No captures in the archive."
+            : "No captures on " + root.timelineDay + "."
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(6)
+          visible: root.selectedFrame !== null
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Button {
+              text: "Back to captures"
+              foreground: Color.foreground
+              onClicked: {
+                root.selectedFrame = null
+                root.confirmForget = ""
+              }
+            }
+
+            Button {
+              text: "Copy text"
+              foreground: Color.foreground
+              onClicked: root.copyFrame(root.selectedFrame.id)
+            }
+
+            Button {
+              text: "Forget frame"
+              foreground: Color.foreground
+              onClicked: root.confirmForget = "frame"
+            }
+          }
+
+          Image {
+            width: parent.width
+            height: Style.space(210)
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            cache: false
+            source: root.selectedFrame ? root.frameSource(root.selectedFrame.path) : ""
+            sourceSize.width: Style.space(800)
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            text: root.selectedFrame
+              ? root.selectedFrame.day + "  ·  " + root.selectedFrame.time
+                + "  ·  " + (root.selectedFrame.app || "unknown")
+              : ""
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+            visible: root.selectedFrame && root.selectedFrame.title
+            text: root.selectedFrame ? root.selectedFrame.title || "" : ""
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            color: Color.foreground
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+            visible: root.selectedFrame
+              && root.mode === "search" && root.selectedFrame.snippet
+            text: root.selectedFrame ? root.selectedFrame.snippet || "" : ""
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.confirmForget === "frame"
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width - cancelFrameButton.width - deleteFrameButton.width - Style.space(12)
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              text: "Permanently delete this frame and its indexed text?"
+            }
+
+            Button {
+              id: cancelFrameButton
+              text: "Cancel"
+              foreground: Color.foreground
+              onClicked: root.confirmForget = ""
+            }
+
+            Button {
+              id: deleteFrameButton
+              text: "Delete"
+              foreground: Color.foreground
+              onClicked: {
+                if (root.service && root.selectedFrame)
+                  root.service.forget("frame", root.selectedFrame.id)
+                root.selectedFrame = null
+                root.confirmForget = ""
+              }
+            }
+          }
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.mode === "timeline" && root.selectedFrame === null
+            && root.timelineDay !== "" && root.timelineFrames.length > 0
+          color: Color.foreground
+          opacity: 0.6
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          text: "Select a capture to preview it."
+        }
 
         // -- how far back this reaches, and the one knob that changes it ----
         // Disk is the only limit that matters here, so it is stated in the
@@ -299,7 +558,7 @@ Panel {
           PanelActionButton {
             id: storageButton
             iconText: "󰋊"
-            tooltipText: "Choose how much disk to use"
+            tooltipText: "Storage, age limit, and deletion controls"
             onClicked: root.showStorage = !root.showStorage
           }
         }
@@ -373,6 +632,139 @@ Panel {
             wrapMode: Text.WordWrap
             text: "Lowering this deletes the oldest frames straight away."
           }
+
+          PanelSeparator { width: parent.width }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            color: Color.foreground
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            text: "Automatic age limit"
+          }
+
+          Flow {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: [
+                { days: 0, label: "Never" },
+                { days: 7, label: "7 days" },
+                { days: 30, label: "30 days" },
+                { days: 90, label: "90 days" }
+              ]
+
+              Rectangle {
+                id: retentionChip
+                readonly property bool current: root.retentionDays === modelData.days
+                width: retentionLabel.implicitWidth + Style.space(16)
+                height: retentionLabel.implicitHeight + Style.space(10)
+                radius: Style.space(4)
+                color: retentionChip.current ? Color.foreground : "transparent"
+                border.width: 1
+                border.color: Color.foreground
+                opacity: retentionChip.current ? 1.0 : 0.45
+
+                Text {
+                  textFormat: Text.PlainText
+                  id: retentionLabel
+                  anchors.centerIn: parent
+                  color: retentionChip.current ? Color.background : Color.foreground
+                  font.family: Style.font.family
+                  font.pixelSize: Style.font.caption
+                  text: modelData.label
+                }
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: if (root.service) root.service.setRetention(modelData.days)
+                }
+              }
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            width: parent.width
+            color: Color.foreground
+            opacity: 0.6
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
+            text: "Changing the age limit immediately removes older frames."
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+
+            Button {
+              text: "Forget this day"
+              foreground: Color.foreground
+              enabled: root.timelineDay !== ""
+              onClicked: root.confirmForget = "day"
+            }
+
+            Button {
+              text: "Forget everything"
+              foreground: Color.foreground
+              enabled: root.frames > 0
+              onClicked: root.confirmForget = "all"
+            }
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: root.confirmForget === "day" || root.confirmForget === "all"
+
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width - cancelHistoryButton.width - deleteHistoryButton.width - Style.space(12)
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+              text: root.confirmForget === "all"
+                ? "Permanently delete all captured screens and indexed text?"
+                : "Permanently delete every capture from " + root.timelineDay + "?"
+            }
+
+            Button {
+              id: cancelHistoryButton
+              text: "Cancel"
+              foreground: Color.foreground
+              onClicked: root.confirmForget = ""
+            }
+
+            Button {
+              id: deleteHistoryButton
+              text: "Delete"
+              foreground: Color.foreground
+              onClicked: {
+                if (root.service) root.service.forget(
+                  root.confirmForget === "all" ? "all" : root.timelineDay)
+                root.selectedFrame = null
+                root.confirmForget = ""
+              }
+            }
+          }
+        }
+
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.controlError !== ""
+          color: Color.foreground
+          opacity: 0.8
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+          text: root.controlError
         }
 
         PanelSeparator { width: parent.width; visible: root.frames > 0 }
